@@ -2,12 +2,15 @@
 
 *其他语言版本: [English](ikev2-howto.md), [简体中文](ikev2-howto-zh.md).*
 
-**重要提示：** 本指南仅适用于**高级用户**。其他用户请使用 [IPsec/L2TP](clients-zh.md) 或者 [IPsec/XAuth](clients-xauth-zh.md) 模式。
+**注：** 本指南适用于**高级用户**。其他用户请使用 [IPsec/L2TP](clients-zh.md) 或者 [IPsec/XAuth](clients-xauth-zh.md) 模式。
 
 ---
 * [导言](#导言)
-* [在 VPN 服务器上配置 IKEv2](#在-vpn-服务器上配置-ikev2)
+* [使用辅助脚本](#使用辅助脚本)
+* [手动在 VPN 服务器上配置 IKEv2](#手动在-vpn-服务器上配置-ikev2)
 * [配置 IKEv2 VPN 客户端](#配置-ikev2-vpn-客户端)
+* [添加一个客户端证书](#添加一个客户端证书)
+* [吊销一个客户端证书](#吊销一个客户端证书)
 * [已知问题](#已知问题)
 * [参考链接](#参考链接)
 
@@ -22,11 +25,21 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 - Android 4.x 和更新版本（使用 strongSwan VPN 客户端）
 - iOS (iPhone/iPad)
 
-## 在 VPN 服务器上配置 IKEv2
+## 使用辅助脚本
 
-**重要：** 作为使用本指南的先决条件，在继续之前，你必须确保你已经成功地 <a href="../README-zh.md" target="_blank">搭建自己的 VPN 服务器</a>，并且（可选但推荐）将 Libreswan <a href="../README-zh.md#升级libreswan" target="_blank">升级</a> 到最新版本。
+**重要：** 作为使用本指南的先决条件，在继续之前，你必须确保你已经成功地 <a href="../README-zh.md" target="_blank">搭建自己的 VPN 服务器</a>，并且（可选但推荐）将 Libreswan <a href="../README-zh.md#升级libreswan" target="_blank">升级</a> 到最新版本。**Docker 用户请看 <a href="https://github.com/hwdsl2/docker-ipsec-vpn-server/blob/master/README-zh.md#配置并使用-ikev2-vpn" target="_blank">这里</a>**。
 
-下面举例说明如何在 Libreswan 上配置 IKEv2。以下命令必须用 `root` 账户运行。
+你可以使用这个辅助脚本来自动地在 VPN 服务器上配置 IKEv2：
+
+```
+wget https://git.io/ikev2setup -O ikev2.sh && sudo bash ikev2.sh
+```
+
+该 <a href="../extras/ikev2setup.sh" target="_blank">脚本</a> 必须使用 `bash` 而不是 `sh` 运行。按照脚本的提示配置 IKEv2。在完成之后，请转到 [配置 IKEv2 VPN 客户端](#配置-ikev2-vpn-客户端) 和 [已知问题](#已知问题)。如果要为更多的客户端生成证书，只需重新运行脚本。
+
+## 手动在 VPN 服务器上配置 IKEv2
+
+下面举例说明如何手动在 Libreswan 上配置 IKEv2。以下命令必须用 `root` 账户运行。
 
 1. 获取 VPN 服务器的公共 IP 地址，将它保存到变量并检查。
 
@@ -40,10 +53,17 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 
    **注：** 另外，在这里你也可以指定 VPN 服务器的域名。例如： `PUBLIC_IP=myvpn.example.com`。
 
-1. 在 `/etc/ipsec.conf` 文件中添加一个新的 IKEv2 连接：
+1. 添加一个新的 IKEv2 连接：
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   if ! grep -qs '^include /etc/ipsec\.d/\*\.conf$' /etc/ipsec.conf; then
+     echo >> /etc/ipsec.conf
+     echo 'include /etc/ipsec.d/*.conf' >> /etc/ipsec.conf
+   fi
+   ```
+
+   ```bash
+   cat > /etc/ipsec.d/ikev2.conf <<EOF
 
    conn ikev2-cp
      left=%defaultroute
@@ -80,19 +100,19 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
    如果是 Libreswan 3.23 或更新版本：
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns="8.8.8.8 8.8.4.4"
      encapsulation=yes
      mobike=no
    EOF
    ```
 
-   **注：** 如果你的服务器运行 Debian 或者 CentOS/RHEL，并且你想要启用 MOBIKE 支持，可以将上面命令中的 `mobike=no` 换成 `mobike=yes`。**不要**在 Ubuntu 系统上启用该选项。
+   **注：** 如果你的服务器（或者 Docker 主机）运行 Debian 或者 CentOS/RHEL，并且你想要启用 MOBIKE 支持，可以将上面命令中的 `mobike=no` 换成 `mobike=yes`。**不要** 在 Ubuntu 系统上启用该选项。
 
    如果是 Libreswan 3.19-3.22：
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns1=8.8.8.8
      modecfgdns2=8.8.4.4
      encapsulation=yes
@@ -102,7 +122,7 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
    如果是 Libreswan 3.18 或更早版本：
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns1=8.8.8.8
      modecfgdns2=8.8.4.4
      forceencaps=yes
@@ -154,6 +174,8 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 
 1. 生成客户端证书，然后导出 `.p12` 文件，该文件包含客户端证书，私钥以及 CA 证书。
 
+   **注：** 你可以重复本步骤来为更多的客户端生成证书，但必须将所有的 `vpnclient` 换成比如 `vpnclient2`，等等。如需同时连接多个客户端，则必须为每个客户端生成唯一的证书。
+
    生成客户端证书：
 
    ```bash
@@ -182,14 +204,12 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
    pk12util: PKCS12 EXPORT SUCCESSFUL
    ```
 
-   指定一个安全的密码以保护导出的 `.p12` 文件（在导入到 iOS 或 macOS 设备时，该密码不能为空）。你可以重复本步骤来为更多的客户端生成证书，但必须将所有的 `vpnclient` 换成比如 `vpnclient2`，等等。
+   指定一个安全的密码以保护导出的 `.p12` 文件（在导入到 iOS 或 macOS 设备时，该密码不能为空）。
 
-   **注：** 如需同时连接多个客户端，则必须为每个客户端生成唯一的证书。
-
-1. （适用于 iOS 客户端） 导出 CA 证书到 `vpnca.cer`：
+1. （适用于 iOS 客户端） 导出 CA 证书到 `ikev2vpnca.cer`：
 
    ```bash
-   certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -a -o vpnca.cer
+   certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -a -o ikev2vpnca.cer
    ```
 
 1. 证书数据库现在应该包含以下内容：
@@ -207,7 +227,7 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
    vpnclient                                          u,u,u
    ```
 
-   **注：** 如需显示证书内容，可使用 `certutil -L -d sql:/etc/ipsec.d -n "Nickname"`。要删除一个证书，将 `-L` 换成 `-D`。更多的 `certutil` 使用说明请看 <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/certutil.1.html" target="_blank">这里</a>。
+   **注：** 如需显示证书内容，可使用 `certutil -L -d sql:/etc/ipsec.d -n "Nickname"`。要吊销一个客户端证书，请转到[这一节](#吊销一个客户端证书)。关于 `certutil` 的其它用法参见 <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_certutil" target="_blank">这里</a>。
 
 1. **（重要）重启 IPsec 服务**：
 
@@ -219,7 +239,9 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 
 ## 配置 IKEv2 VPN 客户端
 
-**注：** 如果你在上面的第一步指定了服务器的域名（而不是 IP 地址），则必须在 **服务器地址** 和 **远程 ID** 字段中输入该域名。
+*其他语言版本: [English](ikev2-howto.md#configure-ikev2-vpn-clients), [简体中文](ikev2-howto-zh.md#配置-ikev2-vpn-客户端).*
+
+**注：** 如果你在上面的第一步指定了服务器的域名（而不是 IP 地址），则必须在 **服务器地址** 和 **远程 ID** 字段中输入该域名。如果要为更多的客户端生成证书，只需重新运行[辅助脚本](#使用辅助脚本)。或者你可以看上一小节的第 4 步。
 
 * [Windows 7, 8.x 和 10](#windows-7-8x-和-10)
 * [OS X (macOS)](#os-x-macos)
@@ -294,7 +316,7 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 
 ### iOS
 
-首先，将文件 `vpnca.cer` 和 `vpnclient.p12` 安全地传送到你的 iOS 设备，并且逐个导入为 iOS 配置描述文件。要传送文件，你可以使用：
+首先，将文件 `ikev2vpnca.cer` 和 `vpnclient.p12` 安全地传送到你的 iOS 设备，并且逐个导入为 iOS 配置描述文件。要传送文件，你可以使用：
 
 1. AirDrop （隔空投送），或者
 1. 将文件上传到设备，在 "文件" 应用程序中单击它们，然后到 "设置" 中导入，或者
@@ -317,13 +339,102 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 
 连接成功后，你可以到 <a href="https://www.ipchicken.com" target="_blank">这里</a> 检测你的 IP 地址，应该显示为`你的 VPN 服务器 IP`。
 
+## 添加一个客户端证书
+
+如果要为更多的客户端生成证书，只需重新运行 [辅助脚本](#使用辅助脚本)。或者你可以看 [这一小节](#手动在-vpn-服务器上配置-ikev2) 的第 4 步。
+
+## 吊销一个客户端证书
+
+在某些情况下，你可能需要吊销一个之前生成的 VPN 客户端证书。这可以通过 `crlutil` 实现。下面举例说明，这些命令必须用 `root` 账户运行。
+
+1. 检查证书数据库，并且找到想要吊销的客户端证书的昵称。
+
+   ```bash
+   certutil -L -d sql:/etc/ipsec.d
+   ```
+
+   ```
+   Certificate Nickname                               Trust Attributes
+                                                      SSL,S/MIME,JAR/XPI
+
+   IKEv2 VPN CA                                       CTu,u,u
+   ($PUBLIC_IP)                                       u,u,u
+   vpnclient-to-revoke                                u,u,u
+   ```
+
+   在这个例子中，我们将要吊销昵称为 `vpnclient-to-revoke` 的客户端证书。它是由 `IKEv2 VPN CA` 签发的。
+
+1. 找到该客户端证书的序列号。
+
+   ```bash
+   certutil -L -d sql:/etc/ipsec.d -n "vpnclient-to-revoke"
+   ```
+
+   ```
+   Certificate:
+       Data:
+           Version: 3 (0x2)
+           Serial Number:
+               00:cd:69:ff:74
+   ... ...
+   ```
+
+   根据上面的输出，我们知道该序列号为十六进制的 `CD69FF74`，也就是十进制的 `3446275956`。它将在以下步骤中使用。
+
+1. 创建一个新的证书吊销列表 (CRL)。该步骤对于每个 CA 只需运行一次。
+
+   ```bash
+   if ! crlutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" 2>/dev/null; then
+     crlutil -G -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -c /dev/null
+   fi
+   ```
+
+   ```
+   CRL Info:
+   :
+       Version: 2 (0x1)
+       Signature Algorithm: PKCS #1 SHA-256 With RSA Encryption
+       Issuer: "O=IKEv2 VPN,CN=IKEv2 VPN CA"
+       This Update: Sat Jun 06 22:00:00 2020
+       CRL Extensions:
+   ```
+
+1. 将你想要吊销的客户端证书添加到 CRL。在这里我们指定该证书的（十进制）序列号，以及吊销时间（UTC时间，格式：GeneralizedTime (YYYYMMDDhhmmssZ)）。
+
+   ```bash
+   crlutil -M -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" <<EOF
+   addcert 3446275956 20200606220100Z
+   EOF
+   ```
+
+   ```
+   CRL Info:
+   :
+       Version: 2 (0x1)
+       Signature Algorithm: PKCS #1 SHA-256 With RSA Encryption
+       Issuer: "O=IKEv2 VPN,CN=IKEv2 VPN CA"
+       This Update: Sat Jun 06 22:02:00 2020
+       Entry 1 (0x1):
+           Serial Number:
+               00:cd:69:ff:74
+           Revocation Date: Sat Jun 06 22:01:00 2020
+       CRL Extensions:
+   ```
+
+   **注：** 如果需要从 CRL 删除一个证书，可以将上面的 `addcert 3446275956 20200606220100Z` 替换为 `rmcert 3446275956`。关于 `crlutil` 的其它用法参见 <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_crlutil" target="_blank">这里</a>。
+
+1. 最后，让 Libreswan 重新读取已更新的 CRL。
+
+   ```bash
+   ipsec crls
+   ```
+
 ## 已知问题
 
 1. Windows 自带的 VPN 客户端可能不支持 IKEv2 fragmentation。在有些网络上，这可能会导致连接错误或其它连接问题。你可以尝试换用 <a href="clients-zh.md" target="_blank">IPsec/L2TP</a> 或 <a href="clients-xauth-zh.md" target="_blank">IPsec/XAuth</a> 模式。
+1. Ubuntu 18.04 用户在尝试将生成的 `.p12` 文件导入到 Windows 时可能会遇到错误 "输入的密码不正确"。这是由 `NSS` 中的一个问题导致的。更多信息请看 <a href="https://github.com/hwdsl2/setup-ipsec-vpn/issues/414#issuecomment-460495258" target="_blank">这里</a>。
 1. 如果你使用 strongSwan Android VPN 客户端，则必须将服务器上的 Libreswan <a href="../README-zh.md#升级libreswan" target="_blank">升级</a> 到版本 3.26 或以上。
 1. 如果你的 VPN 客户端可以连接但是无法打开任何网站，可以尝试编辑服务器上的 `/etc/ipsec.conf`。找到 `conn ikev2-cp` 部分的 `phase2alg=` 一行并删除 `aes_gcm-null,`。保存文件并运行 `service ipsec restart`。
-1. Ubuntu 18.04 和 CentOS 用户在尝试将生成的 `.p12` 文件导入到 Windows 时可能会遇到错误 "输入的密码不正确"。这是由 `NSS` 中的一个问题导致的。更多信息请看 <a href="https://github.com/hwdsl2/setup-ipsec-vpn/issues/414#issuecomment-460430354" target="_blank">这里</a>。
-1. 目前还不支持同时连接在同一个 NAT （比如家用路由器）后面的多个 IKEv2 客户端。对于这个用例，请换用 <a href="clients-xauth-zh.md" target="_blank">IPsec/XAuth</a> 模式。
 
 ## 参考链接
 
@@ -332,3 +443,5 @@ Libreswan 支持通过使用 RSA 签名算法的 X.509 Machine Certificates 来�
 * https://libreswan.org/man/ipsec.conf.5.html
 * https://wiki.strongswan.org/projects/strongswan/wiki/WindowsClients
 * https://wiki.strongswan.org/projects/strongswan/wiki/AndroidVpnClient
+* https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_certutil
+* https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_crlutil

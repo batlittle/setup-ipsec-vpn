@@ -2,12 +2,15 @@
 
 *Read this in other languages: [English](ikev2-howto.md), [简体中文](ikev2-howto-zh.md).*
 
-**Important:** This guide is for **advanced users** only. Other users please use [IPsec/L2TP](clients.md) or [IPsec/XAuth](clients-xauth.md) mode.
+**Note:** This guide is for **advanced users**. Other users please use [IPsec/L2TP](clients.md) or [IPsec/XAuth](clients-xauth.md) mode.
 
 ---
 * [Introduction](#introduction)
-* [Set up IKEv2 on the VPN server](#set-up-ikev2-on-the-vpn-server)
+* [Using helper scripts](#using-helper-scripts)
+* [Manually set up IKEv2 on the VPN server](#manually-set-up-ikev2-on-the-vpn-server)
 * [Configure IKEv2 VPN clients](#configure-ikev2-vpn-clients)
+* [Add a client certificate](#add-a-client-certificate)
+* [Revoke a client certificate](#revoke-a-client-certificate)
 * [Known issues](#known-issues)
 * [References](#references)
 
@@ -22,11 +25,21 @@ Libreswan can authenticate IKEv2 clients on the basis of X.509 Machine Certifica
 - Android 4.x and newer (using the strongSwan VPN client)
 - iOS (iPhone/iPad)
 
-## Set up IKEv2 on the VPN server
+## Using helper scripts
 
-**Important:** As a prerequisite to using this guide, and before continuing, you must make sure that you have successfully <a href="https://github.com/hwdsl2/setup-ipsec-vpn" target="_blank">set up your own VPN server</a>, and (optional but recommended) <a href="../README.md#upgrade-libreswan" target="_blank">upgraded Libreswan</a> to the latest version.
+**Important:** As a prerequisite to using this guide, and before continuing, you must make sure that you have successfully <a href="https://github.com/hwdsl2/setup-ipsec-vpn" target="_blank">set up your own VPN server</a>, and (optional but recommended) <a href="../README.md#upgrade-libreswan" target="_blank">upgraded Libreswan</a> to the latest version. **Docker users, see <a href="https://github.com/hwdsl2/docker-ipsec-vpn-server/blob/master/README.md#configure-and-use-ikev2-vpn" target="_blank">here</a>**.
 
-The following example shows how to configure IKEv2 with Libreswan. Commands below must be run as `root`.
+You may use this helper script to automatically set up IKEv2 on the VPN server:
+
+```
+wget https://git.io/ikev2setup -O ikev2.sh && sudo bash ikev2.sh
+```
+
+The <a href="../extras/ikev2setup.sh" target="_blank">script</a> must be run using `bash`, not `sh`. Follow the prompts to set up IKEv2. When finished, continue to [configure IKEv2 VPN clients](#configure-ikev2-vpn-clients) and check [known issues](#known-issues). If you want to generate certificates for additional VPN clients, just run the script again.
+
+## Manually set up IKEv2 on the VPN server
+
+The following example shows how to manually configure IKEv2 with Libreswan. Commands below must be run as `root`.
 
 1. Find the VPN server's public IP, save it to a variable and check.
 
@@ -40,10 +53,17 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
 
    **Note:** Alternatively, you may specify the server's DNS name here. e.g. `PUBLIC_IP=myvpn.example.com`.
 
-1. Add a new IKEv2 connection to `/etc/ipsec.conf`:
+1. Add a new IKEv2 connection:
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   if ! grep -qs '^include /etc/ipsec\.d/\*\.conf$' /etc/ipsec.conf; then
+     echo >> /etc/ipsec.conf
+     echo 'include /etc/ipsec.d/*.conf' >> /etc/ipsec.conf
+   fi
+   ```
+
+   ```bash
+   cat > /etc/ipsec.d/ikev2.conf <<EOF
 
    conn ikev2-cp
      left=%defaultroute
@@ -80,19 +100,19 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
    For Libreswan 3.23 and newer:
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns="8.8.8.8 8.8.4.4"
      encapsulation=yes
      mobike=no
    EOF
    ```
 
-   **Note:** If your server runs Debian or CentOS/RHEL and you wish to enable MOBIKE support, replace `mobike=no` with `mobike=yes` in the command above. DO NOT enable this option on Ubuntu systems.
+   **Note:** If your server (or Docker host) runs Debian or CentOS/RHEL and you wish to enable MOBIKE support, replace `mobike=no` with `mobike=yes` in the command above. **DO NOT** enable this option on Ubuntu systems.
 
    For Libreswan 3.19-3.22:
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns1=8.8.8.8
      modecfgdns2=8.8.4.4
      encapsulation=yes
@@ -102,7 +122,7 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
    For Libreswan 3.18 and older:
 
    ```bash
-   cat >> /etc/ipsec.conf <<EOF
+   cat >> /etc/ipsec.d/ikev2.conf <<EOF
      modecfgdns1=8.8.8.8
      modecfgdns2=8.8.4.4
      forceencaps=yes
@@ -154,6 +174,8 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
 
 1. Generate client certificate(s), then export the `.p12` file that contains the client certificate, private key, and CA certificate.
 
+   **Note:** You may repeat this step to generate certificates for additional VPN clients, but make sure to replace every `vpnclient` with `vpnclient2`, etc. To connect multiple VPN clients simultaneously, you must generate a unique certificate for each.
+
    Generate client certificate:
 
    ```bash
@@ -182,14 +204,12 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
    pk12util: PKCS12 EXPORT SUCCESSFUL
    ```
 
-   Enter a secure password to protect the exported `.p12` file (when importing into an iOS or macOS device, this password cannot be empty). You may repeat this step to generate certificates for additional VPN clients, but make sure to replace every `vpnclient` with `vpnclient2`, etc.
+   Enter a secure password to protect the exported `.p12` file (when importing into an iOS or macOS device, this password cannot be empty).
 
-   **Note:** To connect multiple VPN clients simultaneously, you must generate a unique certificate for each.
-
-1. (For iOS clients) Export the CA certificate as `vpnca.cer`:
+1. (For iOS clients) Export the CA certificate as `ikev2vpnca.cer`:
 
    ```bash
-   certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -a -o vpnca.cer
+   certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -a -o ikev2vpnca.cer
    ```
 
 1. The database should now contain:
@@ -207,7 +227,7 @@ The following example shows how to configure IKEv2 with Libreswan. Commands belo
    vpnclient                                          u,u,u
    ```
 
-   **Note:** To display a certificate, use `certutil -L -d sql:/etc/ipsec.d -n "Nickname"`. To delete a certificate, replace `-L` with `-D`. For other `certutil` usage, read <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/certutil.1.html" target="_blank">this page</a>.
+   **Note:** To display a certificate, use `certutil -L -d sql:/etc/ipsec.d -n "Nickname"`. To revoke a client certificate, follow [these steps](#revoke-a-client-certificate). For other `certutil` usage, read <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_certutil" target="_blank">here</a>.
 
 1. **(Important) Restart the IPsec service**:
 
@@ -219,7 +239,9 @@ Before continuing, you **must** restart the IPsec service. The IKEv2 setup on th
 
 ## Configure IKEv2 VPN clients
 
-**Note:** If you specified the server's DNS name (instead of its IP address) in step 1 above, you must enter the DNS name in the **Server** and **Remote ID** fields.
+*Read this in other languages: [English](ikev2-howto.md#configure-ikev2-vpn-clients), [简体中文](ikev2-howto-zh.md#配置-ikev2-vpn-客户端).*
+
+**Note:** If you specified the server's DNS name (instead of its IP address) in step 1 above, you must enter the DNS name in the **Server** and **Remote ID** fields. If you want to generate certificates for additional VPN clients, just run the [helper script](#using-helper-scripts) again. Or you may refer to step 4 in the previous section.
 
 * [Windows 7, 8.x and 10](#windows-7-8x-and-10)
 * [OS X (macOS)](#os-x-macos)
@@ -294,7 +316,7 @@ First, securely transfer `vpnclient.p12` to your Mac, then double-click to impor
 
 ### iOS
 
-First, securely transfer both `vpnca.cer` and `vpnclient.p12` to your iOS device, then import them one by one as iOS profiles. To transfer the files, you may use:
+First, securely transfer both `ikev2vpnca.cer` and `vpnclient.p12` to your iOS device, then import them one by one as iOS profiles. To transfer the files, you may use:
 
 1. AirDrop, or
 1. Upload the files to your device, tap them in the "Files" app, then go to "Settings" and import, or
@@ -317,13 +339,102 @@ When finished, check to make sure both `vpnclient` and `IKEv2 VPN CA` are listed
 
 Once successfully connected, you can verify that your traffic is being routed properly by <a href="https://www.google.com/search?q=my+ip" target="_blank">looking up your IP address on Google</a>. It should say "Your public IP address is `Your VPN Server IP`".
 
+## Add a client certificate
+
+If you want to generate certificates for additional VPN clients, just run the [helper script](#using-helper-scripts) again. Or you may refer to step 4 in [this section](#manually-set-up-ikev2-on-the-vpn-server).
+
+## Revoke a client certificate
+
+In certain circumstances, you may need to revoke a previously generated VPN client certificate. This can be done using `crlutil`. See example steps below, commands must be run as `root`.
+
+1. Check the database, and identify the nickname of the client certificate you want to revoke.
+
+   ```bash
+   certutil -L -d sql:/etc/ipsec.d
+   ```
+
+   ```
+   Certificate Nickname                               Trust Attributes
+                                                      SSL,S/MIME,JAR/XPI
+
+   IKEv2 VPN CA                                       CTu,u,u
+   ($PUBLIC_IP)                                       u,u,u
+   vpnclient-to-revoke                                u,u,u
+   ```
+
+   In this example, we will revoke the certificate with nickname `vpnclient-to-revoke`, issued by `IKEv2 VPN CA`.
+
+1. Find the serial number of this client certificate.
+
+   ```bash
+   certutil -L -d sql:/etc/ipsec.d -n "vpnclient-to-revoke"
+   ```
+
+   ```
+   Certificate:
+       Data:
+           Version: 3 (0x2)
+           Serial Number:
+               00:cd:69:ff:74
+   ... ...
+   ```
+
+   From the output, we see that the serial number is `CD69FF74` in hexadecimal, which is `3446275956` in decimal. It will be used in the next steps.
+
+1. Create a new Certificate Revocation List (CRL). You only need to do this once for each CA.
+
+   ```bash
+   if ! crlutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" 2>/dev/null; then
+     crlutil -G -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -c /dev/null
+   fi
+   ```
+
+   ```
+   CRL Info:
+   :
+       Version: 2 (0x1)
+       Signature Algorithm: PKCS #1 SHA-256 With RSA Encryption
+       Issuer: "O=IKEv2 VPN,CN=IKEv2 VPN CA"
+       This Update: Sat Jun 06 22:00:00 2020
+       CRL Extensions:
+   ```
+
+1. Add the client certificate you want to revoke to the CRL. Here we specify the certificate's serial number in decimal, and the revocation time in GeneralizedTime format (YYYYMMDDhhmmssZ) in UTC.
+
+   ```bash
+   crlutil -M -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" <<EOF
+   addcert 3446275956 20200606220100Z
+   EOF
+   ```
+
+   ```
+   CRL Info:
+   :
+       Version: 2 (0x1)
+       Signature Algorithm: PKCS #1 SHA-256 With RSA Encryption
+       Issuer: "O=IKEv2 VPN,CN=IKEv2 VPN CA"
+       This Update: Sat Jun 06 22:02:00 2020
+       Entry 1 (0x1):
+           Serial Number:
+               00:cd:69:ff:74
+           Revocation Date: Sat Jun 06 22:01:00 2020
+       CRL Extensions:
+   ```
+
+   **Note:** If you want to remove a certificate from the CRL, replace `addcert 3446275956 20200606220100Z` above with `rmcert 3446275956`. For other `crlutil` usage, read <a href="https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_crlutil" target="_blank">here</a>.
+
+1. Finally, let Libreswan re-read the updated CRL.
+
+   ```bash
+   ipsec crls
+   ```
+
 ## Known issues
 
 1. The built-in VPN client in Windows may not support IKEv2 fragmentation. On some networks, this can cause the connection to fail or have other issues. You may instead try the <a href="clients.md" target="_blank">IPsec/L2TP</a> or <a href="clients-xauth.md" target="_blank">IPsec/XAuth</a> mode.
+1. Ubuntu 18.04 users may encounter the error "The password you entered is incorrect" when trying to import the generated `.p12` file into Windows. This is due to a bug in `NSS`. Read more <a href="https://github.com/hwdsl2/setup-ipsec-vpn/issues/414#issuecomment-460495258" target="_blank">here</a>.
 1. If using the strongSwan Android VPN client, you must <a href="../README.md#upgrade-libreswan" target="_blank">upgrade Libreswan</a> on your server to version 3.26 or above.
 1. If your VPN client can connect but cannot open any website, try editing `/etc/ipsec.conf` on the VPN server. Find the line `phase2alg=` under section `conn ikev2-cp` and delete `aes_gcm-null,`. Save the file and run `service ipsec restart`.
-1. Ubuntu 18.04 and CentOS users may encounter the error "The password you entered is incorrect" when trying to import the generated `.p12` file into Windows. This is due to a bug in `NSS`. Read more <a href="https://github.com/hwdsl2/setup-ipsec-vpn/issues/414#issuecomment-460430354" target="_blank">here</a>.
-1. Connecting multiple IKEv2 clients simultaneously from behind the same NAT (e.g. home router) is not supported at this time. For this use case, please instead use <a href="clients-xauth.md" target="_blank">IPsec/XAuth</a> mode.
 
 ## References
 
@@ -332,3 +443,5 @@ Once successfully connected, you can verify that your traffic is being routed pr
 * https://libreswan.org/man/ipsec.conf.5.html
 * https://wiki.strongswan.org/projects/strongswan/wiki/WindowsClients
 * https://wiki.strongswan.org/projects/strongswan/wiki/AndroidVpnClient
+* https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_certutil
+* https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/tools/NSS_Tools_crlutil

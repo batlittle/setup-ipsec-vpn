@@ -30,11 +30,12 @@ YOUR_PASSWORD=''
 
 # Important notes:   https://git.io/vpnnotes
 # Setup VPN clients: https://git.io/vpnclients
+# IKEv2 guide:       https://git.io/ikev2
 
 # =====================================================
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-SYS_DT=$(date +%F-%T)
+SYS_DT=$(date +%F-%T | tr ':' '_')
 
 exiterr()  { echo "Error: $1" >&2; exit 1; }
 exiterr2() { exiterr "'yum install' failed."; }
@@ -105,6 +106,14 @@ case "$VPN_IPSEC_PSK $VPN_USER $VPN_PASSWORD" in
     ;;
 esac
 
+if [ -n "$VPN_DNS_SRV1" ] && ! check_ip "$VPN_DNS_SRV1"; then
+  exiterr "DNS server 'VPN_DNS_SRV1' is invalid."
+fi
+
+if [ -n "$VPN_DNS_SRV2" ] && ! check_ip "$VPN_DNS_SRV2"; then
+  exiterr "DNS server 'VPN_DNS_SRV2' is invalid."
+fi
+
 bigecho "VPN setup in progress... Please be patient."
 
 # Create and change to working dir
@@ -139,7 +148,7 @@ yum -y install epel-release || yum -y install "$epel_url" || exiterr2
 bigecho "Installing packages required for the VPN..."
 
 REPO1='--enablerepo=epel'
-REPO2='--enablerepo=*server-optional*'
+REPO2='--enablerepo=*server-*optional*'
 REPO3='--enablerepo=*releases-optional*'
 REPO4='--enablerepo=PowerTools'
 
@@ -149,18 +158,26 @@ yum -y install nss-devel nspr-devel pkgconfig pam-devel \
 
 yum "$REPO1" -y install xl2tpd || exiterr2
 
+use_nft=0
 if grep -qs "release 6" /etc/redhat-release; then
+  os_ver=6
   yum -y remove libevent-devel
   yum "$REPO2" "$REPO3" -y install libevent2-devel fipscheck-devel || exiterr2
 elif grep -qs "release 7" /etc/redhat-release; then
+  os_ver=7
   yum -y install systemd-devel iptables-services || exiterr2
   yum "$REPO2" "$REPO3" -y install libevent-devel fipscheck-devel || exiterr2
 else
-  if [ -f /usr/sbin/subscription-manager ]; then
-    subscription-manager repos --enable "codeready-builder-for-rhel-8-*-rpms"
-    yum -y install systemd-devel iptables-services libevent-devel fipscheck-devel || exiterr2
+  os_ver=8
+  if grep -qs "Red Hat" /etc/redhat-release; then
+    REPO4='--enablerepo=codeready-builder-for-rhel-8-*'
+  fi
+  yum "$REPO4" -y install systemd-devel libevent-devel fipscheck-devel || exiterr2
+  if systemctl is-active --quiet firewalld.service; then
+    use_nft=1
+    yum -y install nftables || exiterr2
   else
-    yum "$REPO4" -y install systemd-devel iptables-services libevent-devel fipscheck-devel || exiterr2
+    yum -y install iptables-services || exiterr2
   fi
 fi
 
@@ -170,7 +187,7 @@ yum "$REPO1" -y install fail2ban || exiterr2
 
 bigecho "Compiling and installing Libreswan..."
 
-SWAN_VER=3.31
+SWAN_VER=3.32
 swan_file="libreswan-$SWAN_VER.tar.gz"
 swan_url1="https://github.com/libreswan/libreswan/archive/v$SWAN_VER.tar.gz"
 swan_url2="https://download.libreswan.org/$swan_file"
@@ -180,11 +197,6 @@ fi
 /bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
 tar xzf "$swan_file" && /bin/rm -f "$swan_file"
 cd "libreswan-$SWAN_VER" || exit 1
-if [ "$SWAN_VER" = "3.31" ]; then
-  sed -i '916iif (!st->st_seen_fragvid) { return FALSE; }' programs/pluto/ikev2.c
-  sed -i '1033s/if (/if (LIN(POLICY_IKE_FRAG_ALLOW, sk->ike->sa.st_connection->policy) \&\& sk->ike->sa.st_seen_fragvid \&\& /' \
-    programs/pluto/ikev2_message.c
-fi
 cat > Makefile.inc.local <<'EOF'
 WERROR_CFLAGS = -w
 USE_DNSSEC = false
@@ -269,6 +281,8 @@ conn xauth-psk
   ike-frag=yes
   cisco-unity=yes
   also=shared
+
+include /etc/ipsec.d/*.conf
 EOF
 
 # Specify IPsec PSK
@@ -367,21 +381,45 @@ net.ipv4.tcp_wmem = 10240 87380 12582912
 EOF
 fi
 
+F2B_FILE="/etc/fail2ban/jail.local"
+if [ ! -f "$F2B_FILE" ]; then
+  bigecho "Creating basic Fail2Ban rules..."
+cat > "$F2B_FILE" <<'EOF'
+[ssh-iptables]
+enabled = true
+filter = sshd
+logpath = /var/log/secure
+EOF
+
+  if [ "$use_nft" = "1" ]; then
+cat >> "$F2B_FILE" <<'EOF'
+port = ssh
+banaction = nftables-multiport[blocktype=drop]
+EOF
+  else
+cat >> "$F2B_FILE" <<'EOF'
+action = iptables[name=SSH, port=ssh, protocol=tcp]
+EOF
+  fi
+fi
+
 bigecho "Updating IPTables rules..."
 
-# Check if rules need updating
-ipt_flag=0
 IPT_FILE="/etc/sysconfig/iptables"
-if ! grep -qs "hwdsl2 VPN script" "$IPT_FILE" \
-   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE 2>/dev/null \
-   || ! iptables -t nat -C POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE 2>/dev/null; then
+[ "$use_nft" = "1" ] && IPT_FILE="/etc/sysconfig/nftables.conf"
+ipt_flag=0
+if ! grep -qs "hwdsl2 VPN script" "$IPT_FILE"; then
   ipt_flag=1
 fi
 
-# Add IPTables rules for VPN
 if [ "$ipt_flag" = "1" ]; then
   service fail2ban stop >/dev/null 2>&1
-  iptables-save > "$IPT_FILE.old-$SYS_DT"
+  if [ "$use_nft" = "1" ]; then
+    nft list ruleset > "$IPT_FILE.old-$SYS_DT"
+    chmod 600 "$IPT_FILE.old-$SYS_DT"
+  else
+    iptables-save > "$IPT_FILE.old-$SYS_DT"
+  fi
   iptables -I INPUT 1 -p udp --dport 1701 -m policy --dir in --pol none -j DROP
   iptables -I INPUT 2 -m conntrack --ctstate INVALID -j DROP
   iptables -I INPUT 3 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
@@ -394,35 +432,41 @@ if [ "$ipt_flag" = "1" ]; then
   iptables -I FORWARD 4 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j ACCEPT
   iptables -I FORWARD 5 -i "$NET_IFACE" -d "$XAUTH_NET" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
   iptables -I FORWARD 6 -s "$XAUTH_NET" -o "$NET_IFACE" -j ACCEPT
-  # Uncomment if you wish to disallow traffic between VPN clients themselves
+  # Uncomment to disallow traffic between VPN clients
   # iptables -I FORWARD 2 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j DROP
   # iptables -I FORWARD 3 -s "$XAUTH_NET" -d "$XAUTH_NET" -j DROP
-  iptables -A FORWARD -j DROP
   iptables -t nat -I POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE
   iptables -t nat -I POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE
   echo "# Modified by hwdsl2 VPN script" > "$IPT_FILE"
-  iptables-save >> "$IPT_FILE"
-fi
-
-bigecho "Creating basic Fail2Ban rules..."
-
-if [ ! -f /etc/fail2ban/jail.local ] ; then
-cat > /etc/fail2ban/jail.local <<'EOF'
-[ssh-iptables]
-enabled  = true
-filter   = sshd
-action   = iptables[name=SSH, port=ssh, protocol=tcp]
-logpath  = /var/log/secure
-EOF
+  if [ "$use_nft" = "1" ]; then
+    for vport in 500 4500 1701; do
+        nft insert rule inet firewalld filter_INPUT udp dport "$vport" accept
+      done
+      for vnet in "$L2TP_NET" "$XAUTH_NET"; do
+        for vdir in saddr daddr; do
+          nft insert rule inet firewalld filter_FORWARD ip "$vdir" "$vnet" accept
+        done
+    done
+    echo "flush ruleset" >> "$IPT_FILE"
+    nft list ruleset >> "$IPT_FILE"
+  else
+    iptables -A FORWARD -j DROP
+    iptables-save >> "$IPT_FILE"
+  fi
 fi
 
 bigecho "Enabling services on boot..."
 
-if grep -qs "release 6" /etc/redhat-release; then
+if [ "$os_ver" = "6" ]; then
   chkconfig iptables on
   chkconfig fail2ban on
 else
   systemctl --now mask firewalld 2>/dev/null
+fi
+
+if [ "$use_nft" = "1" ]; then
+  systemctl enable nftables fail2ban 2>/dev/null
+else
   systemctl enable iptables fail2ban 2>/dev/null
 fi
 
@@ -446,9 +490,9 @@ fi
 bigecho "Starting services..."
 
 # Restore SELinux contexts
-restorecon /etc/ipsec.d/*db 2>/dev/null
-restorecon /usr/local/sbin -Rv 2>/dev/null
-restorecon /usr/local/libexec/ipsec -Rv 2>/dev/null
+restorecon /etc/ipsec.d/*db >/dev/null 2>&1
+restorecon /usr/local/sbin -Rv >/dev/null 2>&1
+restorecon /usr/local/libexec/ipsec -Rv >/dev/null 2>&1
 
 # Reload sysctl.conf
 sysctl -e -q -p
@@ -458,10 +502,14 @@ chmod +x /etc/rc.local
 chmod 600 /etc/ipsec.secrets* /etc/ppp/chap-secrets* /etc/ipsec.d/passwd*
 
 # Apply new IPTables rules
-iptables-restore < "$IPT_FILE"
+if [ "$use_nft" = "1" ]; then
+  nft -f "$IPT_FILE"
+else
+  iptables-restore < "$IPT_FILE"
+fi
 
-# Fix xl2tpd on CentOS 7/8, if kernel module "l2tp_ppp" is unavailable
-if grep -qs -e "release 7" -e "release 8" /etc/redhat-release; then
+# Fix xl2tpd if l2tp_ppp is unavailable
+if [ "$os_ver" != "6" ]; then
   if ! modprobe -q l2tp_ppp; then
     sed -i '/^ExecStartPre/s/^/#/' /usr/lib/systemd/system/xl2tpd.service
     systemctl daemon-reload
@@ -492,6 +540,7 @@ Write these down. You'll need them to connect!
 
 Important notes:   https://git.io/vpnnotes
 Setup VPN clients: https://git.io/vpnclients
+IKEv2 guide:       https://git.io/ikev2
 
 ================================================
 
